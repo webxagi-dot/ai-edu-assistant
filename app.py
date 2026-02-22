@@ -12,7 +12,14 @@ import re
 import tempfile
 from collections import Counter
 import networkx as nx
-from pyvis.network import Network
+
+# ===== 尝试导入 pyvis，如果失败则后续使用 matplotlib =====
+try:
+    from pyvis.network import Network
+    pyvis_available = True
+except ImportError:
+    pyvis_available = False
+    import matplotlib.pyplot as plt
 
 # ===== 页面配置 =====
 st.set_page_config(
@@ -33,7 +40,7 @@ st.markdown("""
             margin-bottom: 0.5rem;
         }
         .stTextArea textarea {
-            font-size: 16px;  /* 避免手机上自动缩放 */
+            font-size: 16px;
         }
     }
     .voice-btn {
@@ -51,8 +58,8 @@ if "current_textbook_content" not in st.session_state:
     st.session_state.current_textbook_content = ""
 if "qa_history" not in st.session_state:
     st.session_state.qa_history = []            # 用于学情分析
-if "input_text" not in st.session_state:
-    st.session_state.input_text = ""            # 语音输入暂存
+if "messages" not in st.session_state:
+    st.session_state.messages = []              # 聊天历史
 
 # ===== 侧边栏导航 =====
 st.sidebar.title("🎓 AI 教育平台")
@@ -106,7 +113,6 @@ if page == "📚 智能助教":
         st.write("")  # 垂直占位
         st.write("")
         if st.button("📖 使用当前教材"):
-            # 切换到当前选择的教材（下拉框）
             pass  # 下拉框会处理
 
     # 已有教材选择
@@ -206,19 +212,14 @@ if page == "📚 智能助教":
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # ---- 自定义输入区（支持语音） ----
-    col1, col2, col3 = st.columns([6, 1, 1])
+    # ---- 自定义输入区（不含语音） ----
+    col1, col2 = st.columns([6, 1])
     with col1:
-        user_input = st.text_area("输入你的问题", key="chat_input", value=st.session_state.input_text, height=100, label_visibility="collapsed")
+        user_input = st.text_area("输入你的问题", key="chat_input", height=100, label_visibility="collapsed")
     with col2:
-        st.write("")  # 占位
-        st.write("")
-        voice_btn = st.button("🎤 语音", help="点击开始语音输入")
-    with col3:
         st.write("")
         st.write("")
         send_btn = st.button("📤 发送", type="primary")
-
 
     # 处理发送
     if send_btn and user_input:
@@ -226,7 +227,7 @@ if page == "📚 智能助教":
         st.session_state.messages.append({"role": "user", "content": user_input})
         st.session_state.qa_history.append({
             "question": user_input,
-            "answer": None,  # 待填充
+            "answer": None,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         })
 
@@ -242,13 +243,16 @@ if page == "📚 智能助教":
         # 更新历史中的答案
         st.session_state.qa_history[-1]["answer"] = answer
         st.session_state.messages.append({"role": "assistant", "content": answer})
-        st.session_state.input_text = ""  # 清空输入
         st.rerun()
 
 # ===== 功能2: 作文批改 =====
 elif page == "📝 作文批改":
     st.title("📝 作文批改助手")
     st.markdown("---")
+
+    if not api_key:
+        st.error("请先在侧边栏输入智谱AI API Key")
+        st.stop()
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -317,6 +321,10 @@ elif page == "📝 作文批改":
 elif page == "✍️ 习题生成":
     st.title("✍️ 智能习题生成")
     st.markdown("---")
+
+    if not api_key:
+        st.error("请先在侧边栏输入智谱AI API Key")
+        st.stop()
 
     col1, col2 = st.columns(2)
     with col1:
@@ -423,14 +431,22 @@ elif page == "🧠 知识图谱":
             if i > 0:
                 G.add_edge(nodes[i-1], node)
 
-        # 使用 pyvis 生成交互式 HTML
-        net = Network(height="600px", width="100%", bgcolor="#ffffff", font_color="black")
-        net.from_nx(G)
-        net.toggle_physics(False)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp:
-            net.save_graph(tmp.name)
-            with open(tmp.name, 'r', encoding='utf-8') as f:
-                html_content = f.read()
-
-        st.components.v1.html(html_content, height=600, scrolling=True)
+        if pyvis_available:
+            # 使用 pyvis 生成交互式 HTML
+            net = Network(height="600px", width="100%", bgcolor="#ffffff", font_color="black")
+            net.from_nx(G)
+            net.toggle_physics(False)
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp:
+                net.save_graph(tmp.name)
+                with open(tmp.name, 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+            st.components.v1.html(html_content, height=600, scrolling=True)
+        else:
+            # 使用 matplotlib 生成静态图
+            st.warning("⚠️ 未安装 pyvis 库，将使用静态图显示。如需交互式图谱，请运行 `pip install pyvis` 并重启应用。")
+            plt.figure(figsize=(10, 6))
+            pos = nx.spring_layout(G, k=1, iterations=50)
+            nx.draw(G, pos, with_labels=True, node_color='lightblue', edge_color='gray',
+                    node_size=1500, font_size=8, arrows=True)
+            plt.title("知识点图谱（静态）")
+            st.pyplot(plt)
