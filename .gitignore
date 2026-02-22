@@ -1,8 +1,35 @@
+cat > .gitignore << EOF
+# Virtual environment
 venv/
+env/
+ENV/
+
+# Local model files
+local_models/
+*.bin
+*.safetensors
+
+# Vector stores
 chroma_db/
 chroma_db_web/
+chroma_db_assistant/
+
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# Environment variables
 .env
-local_models/
+*.env
+EOF
