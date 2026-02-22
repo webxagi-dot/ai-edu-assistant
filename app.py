@@ -16,7 +16,7 @@ if not IS_CLOUD:
     local_model_path = os.path.expanduser("~/Desktop/ai-edu/local_models/all-MiniLM-L6-v2")
 else:
     local_model_path = "sentence-transformers/all-MiniLM-L6-v2"
-    
+
 # ===== 页面配置 =====
 st.set_page_config(
     page_title="AI 教育助教",
@@ -71,8 +71,16 @@ with st.sidebar:
 # ===== 主界面 =====
 if uploaded_file is not None:
     # 读取上传的教材
-    textbook = uploaded_file.getvalue().decode("utf-8")
-    st.success(f"✅ 已加载教材：{uploaded_file.name}")
+    try:
+        textbook = uploaded_file.getvalue().decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            textbook = uploaded_file.getvalue().decode("gbk")
+        except UnicodeDecodeError:
+            st.error("❌ 文件编码错误：请确保上传的文件是 UTF-8 或 GBK 编码的纯文本文件（.txt）")
+            st.stop()
+
+st.success(f"✅ 已加载教材：{uploaded_file.name}")
     
     # 显示教材预览
     with st.expander("📖 教材预览"):
