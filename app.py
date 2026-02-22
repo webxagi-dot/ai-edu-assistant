@@ -79,9 +79,6 @@ if uploaded_file is not None:
     
     # ===== 初始化 RAG 系统 =====
     with st.spinner("🔧 正在初始化 AI 助教..."):
-        # 设置离线环境变量（可选，可根据需要调整）
-        os.environ['HF_HUB_OFFLINE'] = '1'
-        os.environ['TRANSFORMERS_OFFLINE'] = '1'
         
         # 定义模型名称（使用 HuggingFace 上的标准模型）
         model_name = "sentence-transformers/all-MiniLM-L6-v2"
