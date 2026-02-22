@@ -1,0 +1,41 @@
+第1章 Python基础
+
+1.1 变量和数据类型
+变量是存储数据的容器。Python是动态类型语言，不需要声明类型。
+常用数据类型：
+- 整数(int)：如 1, 100, -5
+- 浮点数(float)：如 3.14, 2.0
+- 字符串(str)：如 "hello", 'Python'
+- 布尔值(bool)：True 或 False
+- 列表(list)：如 [1, 2, 3]
+- 字典(dict)：如 {"name": "张三", "age": 18}
+
+1.2 条件判断
+if语句用于条件判断：
+if 条件:
+    执行代码
+else:
+    执行其他代码
+
+示例：
+age = 18
+if age >= 18:
+    print("成年")
+else:
+    print("未成年")
+
+1.3 循环
+for循环：遍历序列
+for i in range(5):
+    print(i)
+
+while循环：条件为真时执行
+count = 0
+while count < 5:
+    print(count)
+    count += 1
+
+
+
+
+
