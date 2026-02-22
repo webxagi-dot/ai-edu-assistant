@@ -1,7 +1,7 @@
 streamlit==1.31.0
 langchain==0.1.0
 langchain-community==0.0.10
-langchain-core==0.1.30  # 大于0.1.28，满足所有依赖
+langchain-core==0.1.32  # 这个版本应该能满足所有依赖
 langchain-text-splitters==0.0.1
 zhipuai==2.1.0
 chromadb==0.4.22
