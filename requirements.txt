@@ -1,7 +1,9 @@
 streamlit==1.31.0
 langchain==0.1.0
 langchain-community==0.0.10
-zhipuai==2.1.0  # 改为 2.1.0（最新稳定版）
+langchain-core==0.1.35
+langchain-text-splitters==0.0.1  # 加上这一行！
+zhipuai==2.1.0
 chromadb==0.4.22
 sentence-transformers==2.2.2
 requests==2.31.0
