@@ -8,6 +8,12 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 import os
 import time
+import re
+import tempfile
+from collections import Counter
+import networkx as nx
+from pyvis.network import Network
+from st_speech_to_text import speech_to_text
 
 # ===== 页面配置 =====
 st.set_page_config(
@@ -16,17 +22,50 @@ st.set_page_config(
     layout="wide"
 )
 
+# ===== 移动端适配 CSS =====
+st.markdown("""
+<style>
+    @media (max-width: 768px) {
+        .main .block-container {
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+        .stChatMessage {
+            margin-bottom: 0.5rem;
+        }
+        .stTextArea textarea {
+            font-size: 16px;  /* 避免手机上自动缩放 */
+        }
+    }
+    .voice-btn {
+        margin-right: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ===== 初始化会话状态 =====
+if "vectorstores" not in st.session_state:
+    st.session_state.vectorstores = {}          # 教材名 -> vectorstore
+if "current_textbook" not in st.session_state:
+    st.session_state.current_textbook = None
+if "current_textbook_content" not in st.session_state:
+    st.session_state.current_textbook_content = ""
+if "qa_history" not in st.session_state:
+    st.session_state.qa_history = []            # 用于学情分析
+if "input_text" not in st.session_state:
+    st.session_state.input_text = ""            # 语音输入暂存
+
 # ===== 侧边栏导航 =====
 st.sidebar.title("🎓 AI 教育平台")
 page = st.sidebar.radio(
     "选择功能",
-    ["📚 智能助教", "📝 作文批改", "✍️ 习题生成"]
+    ["📚 智能助教", "📝 作文批改", "✍️ 习题生成", "📊 学情分析", "🧠 知识图谱"]
 )
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### ⚙️ 全局设置")
 
-# API Key 输入（从环境变量读取默认值）
+# API Key 输入
 default_key = os.getenv("ZHIPU_API_KEY", "1d9ee499e7bb413aaabe015a87b7773c.3UrwmR1C6Ew1gfDy")
 api_key = st.sidebar.text_input(
     "智谱AI API Key",
@@ -59,16 +98,32 @@ if api_key:
 if page == "📚 智能助教":
     st.title("📚 智能助教")
     st.markdown("---")
-    
-    # 教材上传
-    uploaded_file = st.file_uploader(
-        "上传教材文件（.txt）",
-        type=['txt'],
-        key="textbook_uploader"
-    )
-    
+
+    # ---- 教材管理区域 ----
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        uploaded_file = st.file_uploader("上传新教材（.txt）", type=['txt'], key="upload")
+    with col2:
+        st.write("")  # 垂直占位
+        st.write("")
+        if st.button("📖 使用当前教材"):
+            # 切换到当前选择的教材（下拉框）
+            pass  # 下拉框会处理
+
+    # 已有教材选择
+    if st.session_state.vectorstores:
+        selected = st.selectbox(
+            "选择当前教材",
+            list(st.session_state.vectorstores.keys()),
+            index=0
+        )
+        if selected != st.session_state.current_textbook:
+            st.session_state.current_textbook = selected
+            st.rerun()
+
+    # 处理新上传教材
     if uploaded_file is not None:
-        # 处理编码
+        # 读取文件内容
         try:
             textbook = uploaded_file.getvalue().decode("utf-8")
         except UnicodeDecodeError:
@@ -77,39 +132,52 @@ if page == "📚 智能助教":
             except UnicodeDecodeError:
                 st.error("❌ 文件编码错误：请确保上传的文件是 UTF-8 或 GBK 编码的纯文本文件（.txt）")
                 st.stop()
-        
-        st.success(f"✅ 已加载教材：{uploaded_file.name}")
-        
-        with st.expander("📖 教材预览"):
-            st.text(textbook[:500] + "..." if len(textbook) > 500 else textbook)
-        
-        # 初始化 RAG
-        with st.spinner("🔧 初始化知识库..."):
-            # 分割文本
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=200,
-                chunk_overlap=50,
-                separators=["\n\n", "\n", "。", "；"]
-            )
-            texts = text_splitter.split_text(textbook)
-            
-            # 加载 embeddings
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'}
-            )
-            
-            # 创建向量数据库
-            vectorstore = Chroma.from_texts(
-                texts=texts,
-                embedding=embeddings,
-                persist_directory="./chroma_db_assistant"
-            )
-            
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-            
-            # 提示词模板
-            template = """你是一个耐心的老师。请基于以下教材内容回答学生的问题。
+
+        textbook_name = uploaded_file.name
+        if textbook_name not in st.session_state.vectorstores:
+            with st.spinner(f"正在处理教材《{textbook_name}》..."):
+                # 分割文本
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=200,
+                    chunk_overlap=50,
+                    separators=["\n\n", "\n", "。", "；"]
+                )
+                texts = text_splitter.split_text(textbook)
+
+                # 加载 embeddings
+                embeddings = HuggingFaceEmbeddings(
+                    model_name="sentence-transformers/all-MiniLM-L6-v2",
+                    model_kwargs={'device': 'cpu'}
+                )
+
+                # 创建向量数据库
+                vectorstore = Chroma.from_texts(
+                    texts=texts,
+                    embedding=embeddings,
+                    persist_directory=f"./chroma_db_{textbook_name}"
+                )
+                st.session_state.vectorstores[textbook_name] = vectorstore
+                st.session_state.current_textbook = textbook_name
+                st.session_state.current_textbook_content = textbook
+                st.success(f"✅ 教材《{textbook_name}》已添加")
+                st.rerun()
+        else:
+            st.info(f"教材《{textbook_name}》已存在")
+            st.session_state.current_textbook = textbook_name
+            st.session_state.current_textbook_content = textbook
+            st.rerun()
+
+    # 如果没有选择教材，提示
+    if not st.session_state.current_textbook:
+        st.info("请先上传或选择一本教材。")
+        st.stop()
+
+    # ---- 对话界面 ----
+    vectorstore = st.session_state.vectorstores[st.session_state.current_textbook]
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+    # 提示词模板
+    template = """你是一个耐心的老师。请基于以下教材内容回答学生的问题。
 
 教材内容：
 {context}
@@ -122,79 +190,89 @@ if page == "📚 智能助教":
 3. 用简单易懂的语言，可以举例说明
 
 你的回答："""
-            
-            prompt = PromptTemplate.from_template(template)
-            
-            def format_docs(docs):
-                return "\n\n".join([doc.page_content for doc in docs])
-            
-            rag_chain = (
-                {"context": retriever | format_docs, "question": RunnablePassthrough()}
-                | prompt
-                | llm
-                | StrOutputParser()
-            )
-            
-            st.success("✅ 知识库准备就绪！")
-        
-        # 对话界面
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-        
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-        
-        if prompt := st.chat_input("输入你的问题..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            
-            with st.chat_message("assistant"):
-                with st.spinner("思考中..."):
-                    docs = retriever.invoke(prompt)
-                    answer = rag_chain.invoke(prompt)
-                    st.markdown(answer)
-                    
-                    with st.expander("📖 参考教材"):
-                        for i, doc in enumerate(docs):
-                            st.text(f"{i+1}. {doc.page_content[:100]}...")
-            
-            st.session_state.messages.append({"role": "assistant", "content": answer})
+    prompt_template = PromptTemplate.from_template(template)
+
+    def format_docs(docs):
+        return "\n\n".join([doc.page_content for doc in docs])
+
+    rag_chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt_template
+        | llm
+        | StrOutputParser()
+    )
+
+    # 显示聊天历史
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # ---- 自定义输入区（支持语音） ----
+    col1, col2, col3 = st.columns([6, 1, 1])
+    with col1:
+        user_input = st.text_area("输入你的问题", key="chat_input", value=st.session_state.input_text, height=100, label_visibility="collapsed")
+    with col2:
+        st.write("")  # 占位
+        st.write("")
+        voice_btn = st.button("🎤 语音", help="点击开始语音输入")
+    with col3:
+        st.write("")
+        st.write("")
+        send_btn = st.button("📤 发送", type="primary")
+
+    # 处理语音输入
+    if voice_btn:
+        with st.spinner("正在识别语音..."):
+            recognized_text = speech_to_text(language='zh-CN', use_container_width=True)
+            if recognized_text:
+                st.session_state.input_text = recognized_text
+                st.rerun()
+
+    # 处理发送
+    if send_btn and user_input:
+        # 保存到历史
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        st.session_state.qa_history.append({
+            "question": user_input,
+            "answer": None,  # 待填充
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+        with st.chat_message("assistant"):
+            with st.spinner("思考中..."):
+                docs = retriever.invoke(user_input)
+                answer = rag_chain.invoke(user_input)
+                st.markdown(answer)
+                with st.expander("📖 参考教材"):
+                    for i, doc in enumerate(docs):
+                        st.text(f"{i+1}. {doc.page_content[:100]}...")
+
+        # 更新历史中的答案
+        st.session_state.qa_history[-1]["answer"] = answer
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        st.session_state.input_text = ""  # 清空输入
+        st.rerun()
 
 # ===== 功能2: 作文批改 =====
 elif page == "📝 作文批改":
     st.title("📝 作文批改助手")
     st.markdown("---")
-    
+
     col1, col2 = st.columns([1, 1])
-    
     with col1:
         topic = st.text_input("✏️ 作文题目", placeholder="例如：我的梦想")
-        grade_level = st.selectbox(
-            "📊 年级",
-            ["小学", "初中", "高中", "大学"]
-        )
-        
+        grade_level = st.selectbox("📊 年级", ["小学", "初中", "高中", "大学"])
     with col2:
         word_count = st.number_input("📏 字数要求", min_value=100, max_value=1000, value=500, step=50)
-        style = st.selectbox(
-            "📝 文体",
-            ["记叙文", "议论文", "说明文", "应用文"]
-        )
-    
-    essay = st.text_area(
-        "📄 学生作文",
-        height=300,
-        placeholder="在这里粘贴学生的作文..."
-    )
-    
+        style = st.selectbox("📝 文体", ["记叙文", "议论文", "说明文", "应用文"])
+
+    essay = st.text_area("📄 学生作文", height=300, placeholder="在这里粘贴学生的作文...")
+
     if st.button("✨ 开始批改", type="primary"):
         if not essay or not topic:
             st.error("请填写作文题目和内容")
         else:
             with st.spinner("AI 正在批改中..."):
-                # 构建批改提示词
                 grading_prompt = f"""你是一位经验丰富的语文老师。请对以下作文进行批改。
 
 作文题目：{topic}
@@ -222,31 +300,24 @@ elif page == "📝 作文批改":
 【修改建议】...
 【示范段落】...
 """
-                
                 response = llm.invoke(grading_prompt)
-                
-                # 显示结果
                 st.success("✅ 批改完成！")
-                
-                # 解析并显示评分
                 result_text = response.content
-                
-                # 尝试提取总分
-                import re
+
+                # 简单提取总分显示
                 score_match = re.search(r'【总分】(\d+)', result_text)
                 if score_match:
                     total_score = int(score_match.group(1))
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1:
                         st.metric("总分", f"{total_score}/100")
-                    with col2:
+                    with c2:
                         st.metric("内容", re.search(r'【内容评分】(\d+)', result_text).group(1) if re.search(r'【内容评分】(\d+)', result_text) else "?")
-                    with col3:
+                    with c3:
                         st.metric("结构", re.search(r'【结构评分】(\d+)', result_text).group(1) if re.search(r'【结构评分】(\d+)', result_text) else "?")
-                    with col4:
+                    with c4:
                         st.metric("语言", re.search(r'【语言评分】(\d+)', result_text).group(1) if re.search(r'【语言评分】(\d+)', result_text) else "?")
-                
-                # 显示完整批改结果
+
                 with st.expander("📋 详细批改结果", expanded=True):
                     st.markdown(result_text)
 
@@ -254,37 +325,22 @@ elif page == "📝 作文批改":
 elif page == "✍️ 习题生成":
     st.title("✍️ 智能习题生成")
     st.markdown("---")
-    
+
     col1, col2 = st.columns(2)
-    
     with col1:
-        subject = st.selectbox(
-            "📚 科目",
-            ["Python编程", "数学", "英语", "语文", "物理"]
-        )
-        
+        subject = st.selectbox("📚 科目", ["Python编程", "数学", "英语", "语文", "物理"])
         topic = st.text_input("🎯 知识点", placeholder="例如：for循环、一元二次方程、一般现在时")
-        
     with col2:
-        difficulty = st.select_slider(
-            "📊 难度",
-            options=["入门", "简单", "中等", "困难", "挑战"]
-        )
-        
-        question_type = st.multiselect(
-            "📝 题型",
-            ["选择题", "填空题", "简答题", "编程题"],
-            default=["选择题"]
-        )
-    
+        difficulty = st.select_slider("📊 难度", options=["入门", "简单", "中等", "困难", "挑战"])
+        question_type = st.multiselect("📝 题型", ["选择题", "填空题", "简答题", "编程题"], default=["选择题"])
+
     count = st.number_input("📋 题目数量", min_value=1, max_value=10, value=3)
-    
+
     if st.button("✨ 生成习题", type="primary"):
         if not topic:
             st.error("请输入知识点")
         else:
             with st.spinner("AI 正在出题..."):
-                # 构建出题提示词
                 exercise_prompt = f"""你是一位经验丰富的{subject}老师。请根据以下要求生成练习题。
 
 科目：{subject}
@@ -308,18 +364,81 @@ elif page == "✍️ 习题生成":
 解析：[详细解析]
 ---
 """
-                
                 response = llm.invoke(exercise_prompt)
-                
-                # 显示结果
                 st.success("✅ 习题生成完成！")
-                
-                # 分割并显示题目
                 exercises = response.content.split("---")
-                for i, exercise in enumerate(exercises):
-                    if exercise.strip():
+                for i, ex in enumerate(exercises):
+                    if ex.strip():
                         with st.expander(f"📌 第{i+1}题", expanded=i==0):
-                            st.markdown(exercise)
-                            
-                            if st.button(f"查看答案", key=f"ans_{i}"):
-                                st.info("答案已在题目中显示")
+                            st.markdown(ex)
+
+# ===== 功能4: 学情分析 =====
+elif page == "📊 学情分析":
+    st.title("📊 学情分析")
+    st.markdown("---")
+
+    if len(st.session_state.qa_history) == 0:
+        st.info("暂无问答记录，请先在智能助教中提问。")
+    else:
+        st.subheader(f"总提问数：{len(st.session_state.qa_history)}")
+
+        # 关键词统计
+        try:
+            import jieba
+            all_questions = " ".join([item["question"] for item in st.session_state.qa_history])
+            words = jieba.lcut(all_questions)
+            stopwords = set(["的", "了", "是", "在", "和", "有", "这个", "那个", "什么", "怎么", "如何", "为什么", "吗", "呢", "吧", "啊"])
+            keywords = [w for w in words if len(w) > 1 and w not in stopwords]
+            counter = Counter(keywords).most_common(10)
+
+            st.subheader("🔍 高频关键词")
+            for word, count in counter:
+                st.write(f"{word} : {count}次")
+        except ImportError:
+            st.warning("未安装 jieba 分词库，无法进行关键词分析。")
+
+        # 最近问答
+        st.subheader("📜 最近问答")
+        for qa in st.session_state.qa_history[-10:]:
+            with st.expander(f"Q: {qa['question'][:50]}..."):
+                st.write(f"**时间**：{qa['timestamp']}")
+                st.write(f"**A**: {qa['answer']}")
+
+# ===== 功能5: 知识图谱 =====
+elif page == "🧠 知识图谱":
+    st.title("🧠 知识点图谱")
+    st.markdown("---")
+
+    if not st.session_state.current_textbook_content:
+        st.info("请先在智能助教中上传一本教材。")
+        st.stop()
+
+    # 提取章节标题（简单正则）
+    text = st.session_state.current_textbook_content
+    chapters = re.findall(r'第[一二三四五六七八九十\d]+章\s*([^\n]+)', text)
+    sections = re.findall(r'\d+\.\d+\s+([^\n]+)', text)
+    nodes = chapters + sections
+
+    if len(nodes) == 0:
+        st.warning("未能从教材中提取出章节标题，请检查教材格式。")
+    else:
+        st.subheader(f"共提取到 {len(nodes)} 个知识点")
+
+        # 构建简单图（章节之间顺序连接）
+        G = nx.DiGraph()
+        for i, node in enumerate(nodes):
+            G.add_node(node, label=node, size=20)
+            if i > 0:
+                G.add_edge(nodes[i-1], node)
+
+        # 使用 pyvis 生成交互式 HTML
+        net = Network(height="600px", width="100%", bgcolor="#ffffff", font_color="black")
+        net.from_nx(G)
+        net.toggle_physics(False)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp:
+            net.save_graph(tmp.name)
+            with open(tmp.name, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+
+        st.components.v1.html(html_content, height=600, scrolling=True)
