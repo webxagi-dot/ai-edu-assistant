@@ -8,6 +8,15 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 import os
 
+# 检查是否在云端环境
+IS_CLOUD = os.getenv('STREAMLIT_CLOUD', False)
+
+# 只在本地使用本地模型路径
+if not IS_CLOUD:
+    local_model_path = os.path.expanduser("~/Desktop/ai-edu/local_models/all-MiniLM-L6-v2")
+else:
+    local_model_path = "sentence-transformers/all-MiniLM-L6-v2"
+    
 # ===== 页面配置 =====
 st.set_page_config(
     page_title="AI 教育助教",

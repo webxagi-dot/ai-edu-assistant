@@ -1,0 +1,4 @@
+cat > packages.txt << 'EOF'
+build-essential
+python3-dev
+EOF
