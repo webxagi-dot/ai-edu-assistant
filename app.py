@@ -13,7 +13,6 @@ import tempfile
 from collections import Counter
 import networkx as nx
 from pyvis.network import Network
-from st_speech_to_text import speech_to_text
 
 # ===== 页面配置 =====
 st.set_page_config(
@@ -220,13 +219,6 @@ if page == "📚 智能助教":
         st.write("")
         send_btn = st.button("📤 发送", type="primary")
 
-    # 处理语音输入
-    if voice_btn:
-        with st.spinner("正在识别语音..."):
-            recognized_text = speech_to_text(language='zh-CN', use_container_width=True)
-            if recognized_text:
-                st.session_state.input_text = recognized_text
-                st.rerun()
 
     # 处理发送
     if send_btn and user_input:
