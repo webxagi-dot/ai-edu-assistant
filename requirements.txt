@@ -11,3 +11,5 @@ torch==2.1.2
 torchvision==0.16.2
 requests==2.31.0
 python-dotenv==1.0.0
+# 强制 rich 版本低于 14，以兼容 streamlit
+rich<14
